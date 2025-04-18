@@ -3,11 +3,46 @@ import time
 import json
 import os
 import statistics
+import sys
 
-# Configuration
-VLLM_URL = "http://192.168.1.35:8002/v1/completions" # Use completions endpoint for openai-completions
-MODEL_NAME = os.environ.get("ENGINE", "default_model") # Get model name from env var
-OUTPUT_FILE = f"results/perf_{MODEL_NAME}.json"
+# --- Configuration from MODEL_ARGS --- 
+def parse_model_args(args_str):
+    """Parses the MODEL_ARGS string into a dictionary."""
+    if not args_str:
+        return {}
+    try:
+        return dict(arg.split('=', 1) for arg in args_str.split(','))
+    except ValueError:
+        print(f"ERROR: Invalid format in MODEL_ARGS: '{args_str}'. Expected 'key1=value1,key2=value2,...'", file=sys.stderr)
+        sys.exit(1)
+
+# Get MODEL_ARGS from environment variable
+model_args_str = os.environ.get("MODEL_ARGS")
+if not model_args_str:
+    print("ERROR: MODEL_ARGS environment variable not set.", file=sys.stderr)
+    sys.exit(1)
+
+model_args = parse_model_args(model_args_str)
+
+# Extract required parameters
+BASE_URL = model_args.get("base_url")
+MODEL_NAME = model_args.get("model") # Use 'model' key like lm-eval
+
+if not BASE_URL:
+    print("ERROR: 'base_url' not found in MODEL_ARGS.", file=sys.stderr)
+    sys.exit(1)
+if not MODEL_NAME:
+    print("ERROR: 'model' not found in MODEL_ARGS.", file=sys.stderr)
+    sys.exit(1)
+
+# Construct the completions URL
+VLLM_URL = f"{BASE_URL.rstrip('/')}/v1/completions"
+
+print(f"Using VLLM URL: {VLLM_URL}")
+print(f"Using Model Name: {MODEL_NAME}")
+
+# --- Static Configuration ---
+OUTPUT_FILE = f"results/perf_{MODEL_NAME.replace('/', '_')}.json" # Sanitize model name for filename
 NUM_REQUESTS = 5 # Send multiple requests for more stable metrics
 PROMPT = "Explain the concept of Large Language Models in one sentence."
 
