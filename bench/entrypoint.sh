@@ -40,7 +40,11 @@ QUALITY_DIR="$BASE_RESULTS_DIR/${MODEL_IDENTIFIER}_${TIMESTAMP}"
 PERF_OUTPUT_FILE="$BASE_RESULTS_DIR/perf_${MODEL_IDENTIFIER}_${TIMESTAMP}.json"
 
 # Compose model args for local-completions driver
-MODEL_ARGS="completions_url=http://192.168.1.35:8002/v1/completions,model=$MODEL_IDENTIFIER,num_concurrent=1"
+# Using multi-line definition as requested
+MODEL_ARGS="completions_url=http://192.168.1.35:8002/v1/completions,tokenizer=/models,model=/models,num_concurrent=1"
+
+# Print the arguments being passed
+echo "Using MODEL_ARGS: $MODEL_ARGS"
 
 # 1. Run lm-evaluation-harness (Quality)
 echo "--- Running lm_eval (Quality) ---"
