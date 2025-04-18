@@ -41,7 +41,8 @@ PERF_OUTPUT_FILE="$BASE_RESULTS_DIR/perf_${MODEL_IDENTIFIER}_${TIMESTAMP}.json"
 
 # Compose model args for local-completions driver
 # Using multi-line definition as requested
-MODEL_ARGS="completions_url=http://192.168.1.35:8002/v1/completions,tokenizer=/models,model=/models,num_concurrent=1"
+# Working args: MODEL_ARGS="base_url=http://192.168.1.35:8002/v1/completions,model=/models/,num_concurrent=1,trust_remote_code=True"
+MODEL_ARGS="base_url=http://192.168.1.35:8002/,model=/models/,num_concurrent=1"
 
 # Print the arguments being passed
 echo "Using MODEL_ARGS: $MODEL_ARGS"
