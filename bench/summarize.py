@@ -4,13 +4,11 @@ import os
 from tabulate import tabulate
 
 # --- Configuration ---
-# Define quality thresholds (same as in test_quality.py)
-THRESHOLDS = {
-    "hellaswag": 0.80,
-    "arc_easy": 0.75,
-    "boolq": 0.80
-}
-TASKS = ["hellaswag", "arc_easy", "boolq"]
+TASKS = [
+    "hellaswag", "arc_easy", "boolq",
+    "openbookqa", "winogrande", "piqa", "commonsense_qa", "truthfulqa_mc1", "truthfulqa_mc2",
+    "humaneval", "mbpp"
+]
 # --- End Configuration ---
 
 def load_json(filepath):
@@ -28,27 +26,27 @@ def load_json(filepath):
         print(f"Error loading {filepath}: {e}", file=sys.stderr)
         return None
 
-def format_quality(task, score, threshold):
-    """Formats the quality score with a pass/fail indicator."""
-    if score is None:
-        return f"{task} -- ✗" # Indicate missing score
-    passed = score >= threshold
-    marker = "✓" if passed else "✗"
-    return f"{task} {score:.2f} {marker}"
+def format_score(task, score):
+    """
+    Return a plain string like 'hellaswag 0.64'.
+    If the score is missing, show '--'.
+    """
+    return f"{task} {score:.2f}" if score is not None else f"{task} --"
 
 def main():
-    if len(sys.argv) != 3:
-        print("Usage: python summarize.py <quality_results.json> <perf_results.json>", file=sys.stderr)
+    # Accept 2 or 3 positional args
+    if len(sys.argv) not in (3, 4):
+        print("Usage: python summarize.py <quality_results.json> <perf_results.json> [duration_str]", file=sys.stderr)
         sys.exit(1)
 
     quality_file = sys.argv[1]
     perf_file = sys.argv[2]
+    duration_str = sys.argv[3] if len(sys.argv) == 4 else None
 
     # Extract model name from filename (assuming results/<model>.json format)
     model_name = os.path.basename(quality_file).replace('.json', '')
     if model_name.startswith("perf_"): # Handle perf file name possibility
          model_name = model_name.replace('perf_', '')
-
 
     quality_data = load_json(quality_file)
     perf_data = load_json(perf_file)
@@ -59,46 +57,98 @@ def main():
 
     # --- Extract Quality Scores ---
     quality_scores = {}
-    if 'results' in quality_data:
-        for task in TASKS:
-            if task in quality_data['results']:
-                # Look for 'acc,norm' or 'acc' for accuracy
-                score = quality_data['results'][task].get('acc,norm', quality_data['results'][task].get('acc', None))
-                quality_scores[task] = score
-            else:
-                quality_scores[task] = None # Mark as missing if task not in results
-    else:
-         print(f"Warning: 'results' key not found in {quality_file}", file=sys.stderr)
-         for task in TASKS:
-             quality_scores[task] = None
 
+    # NEW: find where the "results" live  ────────────────────────────────
+    qdata = quality_data
+    if "results" not in qdata:
+        # many eval runs wrap everything under a single model‑name key
+        for v in qdata.values():
+            if isinstance(v, dict) and "results" in v:
+                qdata = v
+                break
+    # qdata now guaranteed to have "results" or we’ll warn below
+    # --------------------------------------------------------------------
+
+    if "results" in qdata:
+        for task in TASKS:
+            entry = qdata["results"].get(task, {}) # Use qdata
+            # Prioritize keys: specific acc -> task-specific -> generic acc
+            score = next((s for s in [
+                entry.get("acc,none"),       # Standard acc (0-shot)
+                entry.get("acc_norm,none"),  # Standard normalized acc (0-shot)
+                entry.get("mc2"),            # Specific: truthfulqa_mc
+                entry.get("acc@1"),          # Specific: apps
+                entry.get("pass@1"),         # Specific: humaneval, mbpp
+                entry.get("acc,norm"),       # Fallback normalized (e.g., hellaswag few-shot?)
+                entry.get("acc_norm"),       # Fallback standard normalized
+                entry.get("acc")             # Fallback standard accuracy
+            ] if s is not None), None)
+            quality_scores[task] = score
+    elif quality_data: # Only warn if quality_data was actually loaded
+        print(f"Warning: 'results' key not found in {quality_file}", file=sys.stderr)
+        quality_scores = {t: None for t in TASKS}
 
     # --- Extract Performance Metrics ---
-    mean_tps = perf_data.get("mean_tps", None)
+    raw_tps = perf_data.get("raw_tps", None)
+    effective_tps = perf_data.get("effective_tps", None)
+    sleep_per_call_s = perf_data.get("sleep_per_call_s", None)
     median_latency = perf_data.get("median_latency_s", None)
+    total_tokens = perf_data.get("total_tokens_generated", None)
 
-    # --- Format Output ---
-    quality_summary_parts = [
-        format_quality(task, quality_scores.get(task), THRESHOLDS.get(task, 0)) for task in TASKS
+    # --- Generate Summary Table --- #
+    summary_header = [f"Metric ({model_name})", "Value"]
+    table_data = [
+        ["Model", model_name],
+        ["-" * 10, "-" * 10],
+        ["Quality Scores", ""],
     ]
-    quality_summary = "  ".join(quality_summary_parts)
-
-    perf_summary_parts = []
-    if mean_tps is not None:
-        perf_summary_parts.append(f"{mean_tps:.1f} tok/s")
+    quality_summary_parts = [
+        format_score(task, quality_scores.get(task))
+        for task in TASKS
+    ]
+    for part in quality_summary_parts:
+        table_data.append([part.split(" ")[0], " ".join(part.split(" ")[1:])])
+    table_data.append(["-" * 10, "-" * 10])
+    table_data.append(["Performance", ""])
+    if raw_tps is not None:
+        table_data.append(["  Mean TPS (raw)",      f"{raw_tps:.1f} tok/s"])
+    if effective_tps is not None and sleep_per_call_s is not None:
+         table_data.append(["  Mean TPS (overall)",  f"{effective_tps:.1f} tok/s (sleep {sleep_per_call_s} s)"])
     else:
-        perf_summary_parts.append("-- tok/s")
-
+         # Fallback if new keys aren't present (optional, for backward compatibility)
+         if perf_data.get("mean_tps") is not None: # Check if the old key exists
+            table_data.append(["  Mean TPS", f"{perf_data.get('mean_tps'):.1f} tok/s"])
     if median_latency is not None:
-         perf_summary_parts.append(f"p50 {median_latency:.2f}s")
+        table_data.append(["  Median Latency", f"p50 {median_latency:.2f}s"])
+    if total_tokens is not None:
+        table_data.append(["  Total Tokens", total_tokens])
+
+    # -------- duration row ----------
+    if duration_str:
+        table_data.append(["-" * 10, "-" * 10])
+        table_data.append(["Total Duration", f"{duration_str} (DD:HH:MM:SS)"])
+
+    # Print the summary table to stdout
+    print("\n--- Generating Summary ---")
+    table_string_stdout = tabulate(table_data, headers=summary_header, tablefmt="pipe") # Use pipe for stdout
+    print(table_string_stdout)
+
+    # --- Save Summary to File ---
+    try:
+        output_dir = os.path.dirname(perf_file)
+        summary_file_path = os.path.join(output_dir, "SUMMARY.txt")
+        # Generate table string with grid format for the file
+        table_string_file = tabulate(table_data, headers=summary_header, tablefmt="grid")
+        with open(summary_file_path, "w") as fp:
+            fp.write(table_string_file)
+        print(f"Summary saved to {summary_file_path}")
+    except Exception as e:
+        print(f"Error saving summary file: {e}", file=sys.stderr)
+
+    if duration_str:
+        print(f"Summary generated (Duration so far: {duration_str}).")
     else:
-         perf_summary_parts.append("p50 --s")
-
-    perf_summary = "  ".join(perf_summary_parts)
-
-    # Print the combined summary line
-    print(f"{model_name:<15} {quality_summary:<45} {perf_summary}")
-
+        print("Summary generated.")
 
 if __name__ == "__main__":
     main()

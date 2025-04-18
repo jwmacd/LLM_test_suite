@@ -26,28 +26,47 @@ model_args = parse_model_args(model_args_str)
 
 # Extract required parameters
 BASE_URL = model_args.get("base_url")
+# Fallback to VLLM_BASE_URL environment variable if base_url not in MODEL_ARGS
+if not BASE_URL:
+    print("INFO: 'base_url' not found in MODEL_ARGS, checking VLLM_BASE_URL environment variable.")
+    BASE_URL = os.environ.get("VLLM_BASE_URL")
+
 MODEL_NAME = model_args.get("model") # Use 'model' key like lm-eval
 
 if not BASE_URL:
-    print("ERROR: 'base_url' not found in MODEL_ARGS.", file=sys.stderr)
+    print("ERROR: Could not determine base URL. Set 'base_url' in MODEL_ARGS or set VLLM_BASE_URL environment variable.", file=sys.stderr)
     sys.exit(1)
 if not MODEL_NAME:
     print("ERROR: 'model' not found in MODEL_ARGS.", file=sys.stderr)
     sys.exit(1)
 
 # Construct the completions URL
-VLLM_URL = f"{BASE_URL.rstrip('/')}/v1/completions"
+VLLM_URL = BASE_URL.rstrip('/')
 
 print(f"Using VLLM URL: {VLLM_URL}")
 print(f"Using Model Name: {MODEL_NAME}")
 
+# --- NEW: Timing variables ---
+RAW_TOTAL_TIME   = 0.0      # excludes sleeps
+EFFECTIVE_PAUSE  = 0.5      # the current sleep, keep it configurable
+SLEEPS_USED      = 0        # counter
+# -------------------------
+
+# --- Output path ---
+# If the caller provided a filename use it,
+# otherwise fall back to the timestamp‑free default.
+if len(sys.argv) > 1 and sys.argv[1]:
+    OUTPUT_FILE = sys.argv[1]
+else:
+    OUTPUT_FILE = f"results/perf_{MODEL_NAME.replace('/', '_')}.json"
+
 # --- Static Configuration ---
-OUTPUT_FILE = f"results/perf_{MODEL_NAME.replace('/', '_')}.json" # Sanitize model name for filename
 NUM_REQUESTS = 5 # Send multiple requests for more stable metrics
 PROMPT = "Explain the concept of Large Language Models in one sentence."
 
 def run_benchmark():
     """Runs performance benchmark against the vLLM server."""
+    global RAW_TOTAL_TIME, SLEEPS_USED # Allow modification of globals
     latencies = []
     total_tokens = 0
     start_times = []
@@ -76,19 +95,36 @@ def run_benchmark():
 
             response.raise_for_status() # Raise exception for bad status codes
 
-            latency = end_time - start_time
+            # --- Timing update ---
+            latency = end_time - start_time          # wall-time for this request
+            RAW_TOTAL_TIME += latency                # accumulate *raw* time
+            # -------------------
             latencies.append(latency)
 
             response_data = response.json()
-            # Calculate generated tokens based on usage info if available
-            generated_tokens = response_data.get('usage', {}).get('completion_tokens', 0)
-            if generated_tokens == 0 and response_data.get('choices'):
-                 # Fallback: crude estimate if usage not provided (less accurate)
-                 generated_tokens = len(response_data['choices'][0]['text'].split())
+            generated_tokens = 0
+            # Prioritize usage stats for accurate token count (vLLM >= 0.4)
+            if 'usage' in response_data and isinstance(response_data['usage'], dict) and \
+               'total_tokens' in response_data['usage'] and 'prompt_tokens' in response_data['usage']:
+                try:
+                    generated_tokens = int(response_data['usage']['total_tokens']) - int(response_data['usage']['prompt_tokens'])
+                except (TypeError, ValueError):
+                    print("Warning: Could not parse token counts from 'usage' field.")
+                    # Fall through to text-based estimation if parsing fails
+
+            # Fallback if usage info is missing or incomplete
+            if generated_tokens <= 0 and response_data.get('choices'):
+                 try:
+                     # Crude estimate if usage not provided (less accurate)
+                     generated_tokens = len(response_data['choices'][0]['text'].split())
+                     print("Warning: Estimating generated tokens from text length. Accuracy may vary.")
+                 except (IndexError, KeyError):
+                     print("Warning: Could not estimate tokens from response text.")
 
             total_tokens += generated_tokens
             print(f"Request {i+1}/{NUM_REQUESTS}: Latency={latency:.3f}s, Tokens={generated_tokens}")
-            time.sleep(0.5) # Small delay between requests
+            time.sleep(EFFECTIVE_PAUSE) # Small delay between requests
+            SLEEPS_USED += 1
 
         except requests.exceptions.RequestException as e:
             print(f"Error during request {i+1}: {e}")
@@ -99,29 +135,31 @@ def run_benchmark():
             continue
 
     if not latencies:
-        print("No successful requests were made. Cannot calculate performance metrics.")
-        results = {
-            "model": MODEL_NAME,
-            "error": "No successful requests completed."
-        }
+        print("ERROR: No successful requests were made. Cannot calculate performance metrics.", file=sys.stderr)
+        # Exit with error code 1 if all requests failed
+        sys.exit(1)
     else:
         median_latency = statistics.median(latencies)
         # Calculate overall throughput based on total time and total tokens
-        overall_time = end_times[-1] - start_times[0] if len(start_times)>0 and len(end_times)>0 else sum(latencies)
-        mean_tps = total_tokens / overall_time if overall_time > 0 else 0
+        eff_total_time = RAW_TOTAL_TIME + SLEEPS_USED * EFFECTIVE_PAUSE
+        raw_tps = total_tokens / RAW_TOTAL_TIME if RAW_TOTAL_TIME else 0
+        eff_tps = total_tokens / eff_total_time if eff_total_time else 0
 
         results = {
             "model": MODEL_NAME,
             "median_latency_s": round(median_latency, 3),
-            "mean_tps": round(mean_tps, 2),
+            "raw_tps": round(raw_tps, 2),
+            "effective_tps": round(eff_tps, 2),
+            "sleep_per_call_s": EFFECTIVE_PAUSE,
             "total_requests": NUM_REQUESTS,
             "successful_requests": len(latencies),
             "total_tokens_generated": total_tokens,
-            "total_time_s": round(overall_time, 3)
+            "total_time_s": round(eff_total_time, 3)
         }
         print(f"Benchmark complete for {MODEL_NAME}.")
         print(f"  Median Latency: {results['median_latency_s']:.3f}s")
-        print(f"  Mean Throughput: {results['mean_tps']:.2f} tok/s")
+        print(f"  Raw Throughput: {results['raw_tps']:.2f} tok/s")
+        print(f"  Effective Throughput: {results['effective_tps']:.2f} tok/s")
 
     # Write results to JSON file
     try:
