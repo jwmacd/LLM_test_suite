@@ -1,0 +1,36 @@
+# Configuration for lm-evaluation-harness using local vLLM server
+
+# Specify the tasks to run
+tasks:
+  - hellaswag
+  - arc_easy
+  - boolq
+
+# Device configuration (CPU for local completions mode)
+device: "cpu"
+
+# Model arguments for local completions
+model_args: |
+  # Specify the model type for local completions
+  engine=hf-chat
+  # Base URL of the OpenAI-compatible API server (vLLM)
+  base_url=http://localhost:8000/v1
+  # Model name (passed via ENGINE environment variable)
+  model=ENV(ENGINE)
+  # Maximum generation tokens
+  max_gen_toks=64
+
+# Number of few-shot examples (0 for zero-shot)
+num_fewshot: 0
+
+# Limit the number of instances per task (optional, for quick testing)
+# limit: 10
+
+# Output path is typically provided via CLI argument
+# output_path: results/
+
+# Use a fixed seed for reproducibility
+seed: 42
+
+# Log samples (optional)
+# log_samples: true

@@ -1,0 +1,42 @@
+# bench/docker-compose.yml
+version: '3.8'
+
+services:
+  evaluator:
+    build:
+      context: . # Build using the Dockerfile in the current directory (bench/)
+      dockerfile: Dockerfile
+    container_name: llm_eval_harness # Optional: give the container a specific name
+    environment:
+      # Pass SKIP_TESTS to the container to optionally disable pytest
+      - SKIP_TESTS=${SKIP_TESTS:-false}
+      # ENGINE is set internally by the entrypoint script, no need to set it here
+      # - ENGINE= # Example: could override default here if needed, but script handles it
+    volumes:
+      # Mount the local results directory into the container's results directory
+      # Use ./results relative to the docker-compose.yml file location
+      - ./results:/app/results
+    networks:
+      # Connect to the default bridge network created by docker-compose
+      # Assumes the vLLM container at http://localhost:8000 is accessible
+      # from this container. If vLLM is also containerized, ensure it's on
+      # the same 'default' network. If vLLM runs on the host, you might need
+      # network_mode: host OR use host.docker.internal instead of localhost.
+      # For http://localhost:8000 as requested, we assume the vLLM container
+      # is reachable as 'localhost' or its service name on this network.
+      # If vLLM is on the HOST, change the base_url in quick_suite.yaml and
+      # entrypoint.sh to http://host.docker.internal:8000
+      - default
+    # Optional: uncomment if the container needs to run interactively or allocate a TTY
+    # stdin_open: true
+    # tty: true
+
+# Define the default network (Docker Compose creates one if not specified)
+# networks:
+#   default:
+#     driver: bridge
+# If connecting to an existing network where vLLM resides:
+# networks:
+#   default:
+#     external: true
+#     name: <name_of_existing_vllm_network>
