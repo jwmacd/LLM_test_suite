@@ -3,30 +3,33 @@ import time
 import json
 import os
 import statistics
+import argparse
 
 # Configuration
-VLLM_URL = "http://localhost:8000/v1/chat/completions"
-MODEL_NAME = os.environ.get("ENGINE", "default_model") # Get model name from env var
-OUTPUT_FILE = f"results/perf_{MODEL_NAME}.json"
+VLLM_URL = "http://192.168.1.35:8002/v1/completions" # Use completions endpoint for openai-completions
 NUM_REQUESTS = 5 # Send multiple requests for more stable metrics
 PROMPT = "Explain the concept of Large Language Models in one sentence."
 
-def run_benchmark():
-    """Runs performance benchmark against the vLLM server."""
+def run_benchmark(output_file_path):
+    """Runs performance benchmark against the vLLM server.
+
+    Args:
+        output_file_path (str): The full path where the JSON results should be saved.
+    """
     latencies = []
     total_tokens = 0
     start_times = []
     end_times = []
 
-    print(f"Starting performance benchmark for model: {MODEL_NAME}...")
+    print(f"Starting performance benchmark...")
+    print(f"Saving results to: {output_file_path}")
 
     # Ensure results directory exists
-    os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
+    os.makedirs(os.path.dirname(output_file_path), exist_ok=True)
 
     headers = {"Content-Type": "application/json"}
     data = {
-        "model": MODEL_NAME,
-        "messages": [{"role": "user", "content": PROMPT}],
+        "prompt": PROMPT,
         "max_tokens": 100, # Limit generated tokens for perf test consistency
         "temperature": 0.1 # Low temp for deterministic output length (mostly)
     }
@@ -49,7 +52,7 @@ def run_benchmark():
             generated_tokens = response_data.get('usage', {}).get('completion_tokens', 0)
             if generated_tokens == 0 and response_data.get('choices'):
                  # Fallback: crude estimate if usage not provided (less accurate)
-                 generated_tokens = len(response_data['choices'][0]['message']['content'].split())
+                 generated_tokens = len(response_data['choices'][0]['text'].split())
 
             total_tokens += generated_tokens
             print(f"Request {i+1}/{NUM_REQUESTS}: Latency={latency:.3f}s, Tokens={generated_tokens}")
@@ -66,7 +69,6 @@ def run_benchmark():
     if not latencies:
         print("No successful requests were made. Cannot calculate performance metrics.")
         results = {
-            "model": MODEL_NAME,
             "error": "No successful requests completed."
         }
     else:
@@ -76,7 +78,6 @@ def run_benchmark():
         mean_tps = total_tokens / overall_time if overall_time > 0 else 0
 
         results = {
-            "model": MODEL_NAME,
             "median_latency_s": round(median_latency, 3),
             "mean_tps": round(mean_tps, 2),
             "total_requests": NUM_REQUESTS,
@@ -84,18 +85,22 @@ def run_benchmark():
             "total_tokens_generated": total_tokens,
             "total_time_s": round(overall_time, 3)
         }
-        print(f"Benchmark complete for {MODEL_NAME}.")
+        print(f"Benchmark complete.")
         print(f"  Median Latency: {results['median_latency_s']:.3f}s")
         print(f"  Mean Throughput: {results['mean_tps']:.2f} tok/s")
 
     # Write results to JSON file
     try:
-        with open(OUTPUT_FILE, 'w') as f:
+        with open(output_file_path, 'w') as f:
             json.dump(results, f, indent=2)
-        print(f"Performance results saved to {OUTPUT_FILE}")
+        print(f"Performance results saved to {output_file_path}")
     except IOError as e:
-        print(f"Error writing performance results to {OUTPUT_FILE}: {e}")
+        print(f"Error writing performance results to {output_file_path}: {e}")
 
-
+# --- Main Execution --- #
 if __name__ == "__main__":
-    run_benchmark()
+    parser = argparse.ArgumentParser(description='Run vLLM performance benchmark.')
+    parser.add_argument('output_file', type=str, help='Path to save the performance results JSON file.')
+    args = parser.parse_args()
+
+    run_benchmark(args.output_file)

@@ -37,36 +37,50 @@ def format_quality(task, score, threshold):
     return f"{task} {score:.2f} {marker}"
 
 def main():
-    if len(sys.argv) != 3:
-        print("Usage: python summarize.py <quality_results.json> <perf_results.json>", file=sys.stderr)
+    if len(sys.argv) != 4:
+        print("Usage: python summarize.py <quality_results.[json|dir]> <perf_results.json> <duration_str>", file=sys.stderr)
         sys.exit(1)
 
-    quality_file = sys.argv[1]
+    quality_arg = sys.argv[1] 
     perf_file = sys.argv[2]
+    duration_str = sys.argv[3]
 
-    # Extract model name from filename (assuming results/<model>.json format)
-    model_name = os.path.basename(quality_file).replace('.json', '')
-    if model_name.startswith("perf_"): # Handle perf file name possibility
+    # If the first arg is a dir, read aggregated.json inside it
+    if os.path.isdir(quality_arg):
+        quality_file = os.path.join(quality_arg, "aggregated.json")
+        model_name = os.path.basename(quality_arg) 
+    else:
+        quality_file = quality_arg 
+        model_name = os.path.splitext(os.path.basename(quality_file))[0]
+
+    # Handle potential 'perf_' prefix if quality derived from perf file accidentally
+    if model_name.startswith("perf_"): 
          model_name = model_name.replace('perf_', '')
-
 
     quality_data = load_json(quality_file)
     perf_data = load_json(perf_file)
 
     if quality_data is None or perf_data is None:
         print(f"[{model_name}] Could not generate summary due to errors loading results.", file=sys.stderr)
-        sys.exit(1) # Exit if results are missing/invalid
+        sys.exit(1) 
 
     # --- Extract Quality Scores ---
     quality_scores = {}
     if 'results' in quality_data:
         for task in TASKS:
             if task in quality_data['results']:
-                # Look for 'acc,norm' or 'acc' for accuracy
-                score = quality_data['results'][task].get('acc,norm', quality_data['results'][task].get('acc', None))
-                quality_scores[task] = score
+                try:
+                    entry = quality_data["results"][task]
+                    score = (entry.get("acc,norm") or 
+                             entry.get("acc_norm") or 
+                             entry.get("acc")      or
+                             next(iter([v for v in entry.values() if isinstance(v, (int,float))]), None))
+
+                    quality_scores[task] = score
+                except KeyError:
+                    quality_scores[task] = None
             else:
-                quality_scores[task] = None # Mark as missing if task not in results
+                quality_scores[task] = None 
     else:
          print(f"Warning: 'results' key not found in {quality_file}", file=sys.stderr)
          for task in TASKS:
@@ -77,27 +91,31 @@ def main():
     mean_tps = perf_data.get("mean_tps", None)
     median_latency = perf_data.get("median_latency_s", None)
 
-    # --- Format Output ---
-    quality_summary_parts = [
-        format_quality(task, quality_scores.get(task), THRESHOLDS.get(task, 0)) for task in TASKS
+    # --- Generate Summary Table --- #
+    summary_header = [f"Metric ({model_name})", "Value"]
+    table_data = [
+        ["Model", model_name], # Added explicit model name row
+        ["-" * 10, "-" * 10], # Separator
+        ["Quality Scores", ""],
     ]
-    quality_summary = "  ".join(quality_summary_parts)
+    # Add formatted quality scores
+    for task in TASKS:
+        score = quality_scores.get(task, None)
+        threshold = THRESHOLDS.get(task, 0)
+        table_data.append([f"  {format_quality(task, score, threshold)}", ""])
 
-    perf_summary_parts = []
-    if mean_tps is not None:
-        perf_summary_parts.append(f"{mean_tps:.1f} tok/s")
-    else:
-        perf_summary_parts.append("-- tok/s")
+    table_data.append(["-" * 10, "-" * 10]) # Separator
+    table_data.append(["Performance", ""])
+    # Add performance metrics
+    table_data.append([f"  Median Latency", f"{perf_data.get('median_latency_s', 'N/A'):.3f} s" if isinstance(perf_data.get('median_latency_s'), (int, float)) else "N/A"])
+    table_data.append([f"  Mean Throughput", f"{perf_data.get('mean_tps', 'N/A'):.2f} tok/s" if isinstance(perf_data.get('mean_tps'), (int, float)) else "N/A"])
+    table_data.append(["  Total Tokens", f"{perf_data.get('total_tokens_generated', 'N/A')}"])
 
-    if median_latency is not None:
-         perf_summary_parts.append(f"p50 {median_latency:.2f}s")
-    else:
-         perf_summary_parts.append("p50 --s")
+    table_data.append(["-" * 10, "-" * 10]) # Separator
+    table_data.append(["Total Duration", f"{duration_str} (DD:HH:MM:SS)"])
 
-    perf_summary = "  ".join(perf_summary_parts)
-
-    # Print the combined summary line
-    print(f"{model_name:<15} {quality_summary:<45} {perf_summary}")
+    print("\n--- Benchmark Summary ---")
+    print(tabulate(table_data, headers=summary_header, tablefmt="grid"))
 
 
 if __name__ == "__main__":

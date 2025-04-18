@@ -1,5 +1,6 @@
 # Custom scripts
 build-and-push.ps1
+project_context.md
 
 # Docker
 .dockerignore

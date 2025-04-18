@@ -7,13 +7,27 @@ WORKDIR /app
 
 # Install dependencies
 # Install git first as lm-eval harness might need it
-RUN apt-get update && apt-get install -y git --no-install-recommends && \
+# RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip git ca-certificates && \
+#     pip3 install --no-cache-dir --upgrade pip && \
+#     pip3 install --no-cache-dir \
+#         pytest \
+#         requests \
+#         tabulate && \
+#     apt-get purge -y --auto-remove git && \
+#     rm -rf /var/lib/apt/lists/*
+#
+# # Install latest lm-eval from GitHub main branch (includes vllm-api driver)
+# RUN pip install --no-cache-dir "git+https://github.com/EleutherAI/lm-evaluation-harness@main#egg=lm-eval[api]"
+
+# System + Python deps (keep git)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git ca-certificates python3-pip && \
+    pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir \
-        "lm-eval[huggingface] @ git+https://github.com/EleutherAI/lm-evaluation-harness.git" \
+        "git+https://github.com/EleutherAI/lm-evaluation-harness@main#egg=lm-eval[api]" \
         pytest \
         requests \
         tabulate && \
-    apt-get purge -y --auto-remove git && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy necessary files from the build context
